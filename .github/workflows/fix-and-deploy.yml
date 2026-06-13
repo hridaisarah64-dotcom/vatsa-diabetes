@@ -6,67 +6,71 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Fetch live index.html
-        run: curl -o index.html https://endo-vatsa-ida.vercel.app/
+        run: curl -L -o index.html https://endo-vatsa-ida.vercel.app/
 
       - name: Apply JS fix for disclaimerCheck button
         run: |
-          python3 - <<'EOF'
-          import re
+          python3 - <<'PYEOF'
           with open('index.html', 'r', encoding='utf-8') as f:
               html = f.read()
-          # Fix: ensure disclaimerAccept button is enabled when checkbox is checked
-          # Pattern: find the event listener and fix disabled = this.checked to disabled = !this.checked
-          fixed = html.replace(
-              'disclaimerAccept.disabled = this.checked',
-              'disclaimerAccept.disabled = !this.checked'
-          )
-          # Also handle alternate pattern
-          if fixed == html:
-              fixed = html.replace(
-                  "disclaimerAccept.disabled=this.checked",
-                  "disclaimerAccept.disabled=!this.checked"
-              )
-          # Inject a reliable fix right before </body> if pattern not found
-          if fixed == html:
-              inject = '''
+          inject = '''
           <script>
-          document.addEventListener('DOMContentLoaded', function() {
-            var cb = document.getElementById('disclaimerCheck');
-            var btn = document.getElementById('disclaimerAccept');
-            if (cb && btn) {
+          (function() {
+            function initDisclaimer() {
+              var cb = document.getElementById('disclaimerCheck');
+              var btn = document.getElementById('disclaimerAccept');
+              if (!cb || !btn) return;
               cb.addEventListener('change', function() {
                 btn.disabled = !this.checked;
               });
+              btn.disabled = !cb.checked;
             }
-          });
+            if (document.readyState === 'loading') {
+              document.addEventListener('DOMContentLoaded', initDisclaimer);
+            } else {
+              initDisclaimer();
+            }
+          })();
           </script>
           '''
-              fixed = html.replace('</body>', inject + '</body>')
+          fixed = html.replace('</body>', inject + '</body>')
           with open('index.html', 'w', encoding='utf-8') as f:
               f.write(fixed)
-          print('Fix applied successfully')
-          EOF
+          print('JS fix injected successfully')
+          PYEOF
 
-      - name: Deploy to Vercel via API
+      - name: Deploy fixed file to Vercel
         run: |
-          # Upload file to Vercel and create deployment
-          CONTENT=$(base64 -w0 index.html)
-          FILE_SIZE=$(wc -c < index.html)
+          TOKEN="vcp_6bQaRn5EWIZ80wcvWzCeq1taar4oQWC8ppxQtLZB5m9bbKBDyz3KJyyW"
+          TEAM="vatsaendo-s-projects1"
           
-          # Get file SHA from Vercel
-          FILE_UPLOAD=$(curl -s -X POST \
-            -H "Authorization: Bearer vcp_6bQaRn5EWIZ80wcvWzCeq1taar4oQWC8ppxQtLZB5m9bbKBDyz3KJyyW" \
+          # Step 1: Get SHA256 of the file
+          FILE_SHA=$(sha256sum index.html | awk '{print $1}')
+          echo "File SHA256: $FILE_SHA"
+          
+          # Step 2: Upload file to Vercel blob store
+          UPLOAD=$(curl -s -X POST \
+            -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/octet-stream" \
+            -H "x-vercel-digest: $FILE_SHA" \
             --data-binary @index.html \
-            "https://api.vercel.com/v2/files")
-          echo "File upload: $FILE_UPLOAD"
-          FILE_SHA=$(echo $FILE_UPLOAD | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('sha', d.get('digest','')) if isinstance(d,dict) else '')" 2>/dev/null || echo "")
-          echo "SHA: $FILE_SHA"
+            "https://api.vercel.com/v2/files?teamId=$TEAM")
+          echo "Upload response: $UPLOAD"
           
-          # Create deployment
+          # Step 3: Create new deployment referencing the file by SHA
           DEPLOY=$(curl -s -X POST \
-            -H "Authorization: Bearer vcp_6bQaRn5EWIZ80wcvWzCeq1taar4oQWC8ppxQtLZB5m9bbKBDyz3KJyyW" \
+            -H "Authorization: Bearer $TOKEN" \
             -H "Content-Type: application/json" \
-            -d "{ \"name\": \"endo-vatsa-ida\", \"files\": [{ \"file\": \"index.html\", \"data\": $CONTENT, \"encoding\": \"base64\" }], \"projectSettings\": { \"framework\": null }, \"target\": \"production\" }" \
-            "https://api.vercel.com/v13/deployments?teamId=vatsaendo-s-projects1&forceNew=1")
+            -d "{
+              \"name\": \"endo-vatsa-ida\",
+              \"files\": [{
+                \"file\": \"index.html\",
+                \"sha\": \"$FILE_SHA\",
+                \"size\": $(wc -c < index.html)
+              }],
+              \"projectSettings\": { \"framework\": null },
+              \"target\": \"production\"
+            }" \
+            "https://api.vercel.com/v13/deployments?teamId=$TEAM&forceNew=1")
           echo "Deployment: $DEPLOY"
+          echo $DEPLOY | python3 -c "import sys,json; d=json.load(sys.stdin); print('URL:', d.get('url','N/A'))"
