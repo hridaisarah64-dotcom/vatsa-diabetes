@@ -8,11 +8,15 @@ jobs:
       - name: Fetch live index.html
         run: curl -L -o index.html https://endo-vatsa-ida.vercel.app/
 
-      - name: Apply JS fix for disclaimerCheck button
+      - name: Apply comprehensive fix
         run: |
           python3 - <<'PYEOF'
+          import re
           with open('index.html', 'r', encoding='utf-8') as f:
               html = f.read()
+          # Remove any previously injected fix scripts to avoid double-patching
+          html = re.sub(r'\s*<script>\s*\(function\(\)\s*\{.*?\}\)\(\);\s*</script>', '', html, flags=re.DOTALL)
+          # Inject the complete fix script before </body>
           inject = '''
               <script>
               (function() {
@@ -20,17 +24,22 @@ jobs:
                       var cb = document.getElementById('disclaimerCheck');
                       var btn = document.getElementById('disclaimerAccept');
                       var overlay = document.getElementById('disclaimerOverlay');
-                      if (!cb || !btn) return;
+                      if (!cb || !btn || !overlay) return;
                       function updateBtn() {
                           btn.disabled = !cb.checked;
                       }
                       cb.addEventListener('change', updateBtn);
-                      btn.addEventListener('click', function() {
-                          if (!cb.checked) return;
-                          if (overlay) {
-                              overlay.style.display = 'none';
+                      btn.onclick = function(e) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (cb.checked) {
+                              overlay.style.cssText = 'display:none !important';
+                              overlay.setAttribute('hidden', '');
+                              overlay.style.visibility = 'hidden';
+                              overlay.style.opacity = '0';
+                              overlay.style.pointerEvents = 'none';
                           }
-                      });
+                      };
                       updateBtn();
                   }
                   if (document.readyState === 'loading') {
@@ -44,7 +53,7 @@ jobs:
           fixed = html.replace('</body>', inject + '</body>')
           with open('index.html', 'w', encoding='utf-8') as f:
               f.write(fixed)
-          print('Fix applied successfully')
+          print('Fix applied')
           PYEOF
 
       - name: Deploy to Vercel
